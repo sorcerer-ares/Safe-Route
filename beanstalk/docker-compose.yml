@@ -1,0 +1,9 @@
+services:
+  web:
+    image: vlawliet/saferoute-app:latest
+    ports:
+      - "80:8000"
+    environment:
+      - DATABASE_URL
+      - GEMINI_API_KEY
+    restart: always

@@ -1,0 +1,28 @@
+# Sensitive configs & secrets (NEVER commit these)
+.env
+.env.*
+*.pem
+*.key
+*.cert
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+*.sqlite3
+
+# Node / JS
+node_modules/
+dist/
+build/
+.npm/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
