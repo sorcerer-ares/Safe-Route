@@ -23,13 +23,40 @@ import {
 } from 'lucide-react';
 
 // Custom Map Helper to smoothly fly to new coordinates
-function MapController({ center }) {
+// Custom Map Helper: fixes grey tiles on mount & smoothly frames active routes
+function MapController({ center, availableRoutes, navState }) {
   const map = useMap();
+
+  // Fix grey tiles on mount and view transitions only
   useEffect(() => {
-    if (center) {
-      map.flyTo(center, 15, { animate: true });
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [map, navState]);
+
+  // Fly to user center when in explore mode
+  useEffect(() => {
+    if (navState === 'explore' && center) {
+      map.invalidateSize();
+      map.flyTo(center, 15, { animate: true, duration: 1.0 });
     }
-  }, [center, map]);
+  }, [center, navState, map]);
+
+  // Frame the routes ONCE when a new search completes (not on every tab click!)
+  useEffect(() => {
+    if (availableRoutes && availableRoutes.safest?.path?.length > 1) {
+      map.invalidateSize();
+      const allPoints = [
+        ...(availableRoutes.safest?.path || []),
+        ...(availableRoutes.moderate?.path || []),
+        ...(availableRoutes.fastest?.path || []),
+      ];
+      const bounds = L.latLngBounds(allPoints);
+      map.flyToBounds(bounds, { padding: [45, 45], maxZoom: 16, duration: 0.8 });
+    }
+  }, [availableRoutes, map]);
+
   return null;
 }
 
@@ -89,14 +116,39 @@ const createZoneIcon = (type) =>
     iconSize: [20, 20],
     iconAnchor: [10, 10],
   });
+// Pulsing Live GPS Dot for User Location
+const userPulseIcon = L.divIcon({
+  className: 'user-pulse-icon',
+  html: `
+    <div style="position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">
+      <div style="position: absolute; width: 24px; height: 24px; border-radius: 50%; background: rgba(16, 185, 129, 0.4); animation: ping 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;"></div>
+      <div style="position: relative; width: 12px; height: 12px; border-radius: 50%; background: #10b981; border: 2.5px solid #ffffff; box-shadow: 0 0 12px #10b981;"></div>
+    </div>
+  `,
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+});
+
+// Sleek Destination Marker
+const destPinIcon = L.divIcon({
+  className: 'dest-pin-icon',
+  html: `
+    <div style="position: relative; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;">
+      <div style="position: absolute; width: 26px; height: 26px; border-radius: 50%; background: rgba(244, 63, 94, 0.35); animation: ping 2s infinite;"></div>
+      <div style="position: relative; width: 14px; height: 14px; border-radius: 50%; background: #f43f5e; border: 2.5px solid #ffffff; box-shadow: 0 0 14px #f43f5e;"></div>
+    </div>
+  `,
+  iconSize: [26, 26],
+  iconAnchor: [13, 13],
+});
 
 export default function App() {
   const [navState, setNavState] = useState('explore'); 
 
   // Dynamic GPS & Destination states
-  const [userCoords, setUserCoords] = useState([28.6280, 77.2090]); 
+  const [userCoords, setUserCoords] = useState([28.5635, 77.2450]);
   const [destCoords, setDestCoords] = useState(null);
-  const [origin, setOrigin] = useState('My Current Location');
+  const [origin, setOrigin] = useState('(Demo Location)');
   const [destination, setDestination] = useState('Tap on Map or Select');
   const [isPickingDest, setIsPickingDest] = useState(false);
 
@@ -130,19 +182,19 @@ export default function App() {
   const API_URL = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';
 
   useEffect(() => {
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const coords = [pos.coords.latitude, pos.coords.longitude];
-          setUserCoords(coords);
-          setOrigin('Current GPS Location');
-        },
-        (err) => {
-          console.warn('Geolocation fallback to Delhi:', err.message);
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    }
+    // if ('geolocation' in navigator) {
+    //   navigator.geolocation.getCurrentPosition(
+    //     (pos) => {
+    //       const coords = [pos.coords.latitude, pos.coords.longitude];
+    //       setUserCoords(coords);
+    //       setOrigin('Current GPS Location');
+    //     },
+    //     (err) => {
+    //       console.warn('Geolocation fallback to Delhi:', err.message);
+    //     },
+    //     { enableHighAccuracy: true, timeout: 10000 }
+    //   );
+    // } commenting for demo purposes
 
     fetch(`${API_URL}/api/zones`)
       .then((res) => (res.ok ? res.json() : []))
@@ -155,6 +207,37 @@ export default function App() {
       .catch((err) => console.error('Failed to load reports:', err));
   }, []);
 
+  // HACKATHON DEMO MAGIC: Simulate walking along the route when navigation starts
+  useEffect(() => {
+    let interval;
+    if (navState === 'navigating' && routePath.length > 0) {
+      let step = 0;
+      
+      interval = setInterval(() => {
+        if (step < routePath.length) {
+          // Move the GPS radar dot to the next coordinate on the path
+          setUserCoords(routePath[step]);
+          step += 1; 
+        } else {
+          // Arrived at destination
+          clearInterval(interval);
+          setTimeout(() => {
+            alert("You have arrived safely at your destination!");
+            setNavState('explore');
+            setRoutePath([]);
+            setCorridorZones([]);
+            setDestCoords(null);
+            setDestination('Tap on Map or Select');
+            // Reset position back to start for the next demo run
+            setUserCoords(routePath[0]); 
+          }, 500);
+        }
+      }, 600); // Moves the dot every 600 milliseconds
+    }
+    
+    return () => clearInterval(interval);
+  }, [navState, routePath]);
+  
   const selectPresetDestination = (name, coords) => {
     setDestination(name);
     setDestCoords(coords);
@@ -177,24 +260,7 @@ export default function App() {
       : [parseFloat(destCoords.lat), parseFloat(destCoords.lng)];
 
     try {
-      const osrmUrl = `https://router.project-osrm.org/route/v1/walking/${cleanOrigin[1]},${cleanOrigin[0]};${cleanDest[1]},${cleanDest[0]}?overview=full&geometries=geojson`;
-      const response = await fetch(osrmUrl);
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.routes && data.routes.length > 0) {
-          const primary = data.routes[0];
-          const coords = primary.geometry.coordinates.map((pt) => [pt[1], pt[0]]);
-          setRoutePath(coords);
-          setRouteStats({
-            distance: `${(primary.distance / 1000).toFixed(1)} km`,
-            duration: `${Math.max(1, Math.round(primary.duration / 60))} min`
-          });
-        }
-      } else {
-        setRoutePath([cleanOrigin, cleanDest]);
-        setRouteStats({ distance: '0.5 km', duration: '5 min' });
-      }
+      // We removed the raw frontend OSRM fetch here
 
       const backendRes = await fetch(`${API_URL}/api/plan-routes`, {
         method: 'POST',
@@ -211,7 +277,7 @@ export default function App() {
         const data = await backendRes.json();
         if (data && data.routes) {
           setAvailableRoutes(data.routes);
-          setSelectedRouteKey('safest'); // Default to safest
+          setSelectedRouteKey('safest');
           
           const activeRoute = data.routes['safest'];
           if (activeRoute.path && activeRoute.path.length > 1) {
@@ -223,20 +289,14 @@ export default function App() {
           setAiData({
             safety_score: activeRoute.score,
             lighting_rating: activeRoute.lighting,
-            crowd_level: activeRoute.crowd, // Changed from police_presence
+            crowd_level: activeRoute.crowd, 
             summary: activeRoute.summary
           });
         }
-      } else {
-        const errDetail = await backendRes.json().catch(() => ({}));
-        console.warn("Backend route evaluation fallback:", errDetail);
       }
-
       setNavState('routes');
     } catch (err) {
       console.error('Route calculation failed:', err);
-      setRoutePath([cleanOrigin, cleanDest]);
-      setRouteStats({ distance: '0.5 km', duration: '5 min' });
       setNavState('routes');
     } finally {
       setIsLoadingRoute(false);
@@ -376,16 +436,17 @@ export default function App() {
             center={userCoords}
             zoom={15}
             zoomControl={false}
-            className="w-full h-full bg-[#0c121e]"
+            attributionControl={false}
+            className="w-full h-full bg-[#07090E]"
           >
-            {/* TILE LAYER MUST BE FIRST SO IT DOESN'T HIDE POLYGONS */}
+            {/* BULLETPROOF DARK MODE: Standard OSM with CSS inversion */}
             <TileLayer
               url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-              attribution='&copy; OpenStreetMap'
-              className="dark-map-tiles"
+              className="dark-tiles"
+              maxZoom={19}
             />
 
-            <MapController center={userCoords} />
+            <MapController center={userCoords} availableRoutes={availableRoutes} navState={navState} />
 
             <MapClickHandler
               isReportingMode={isReportingMode}
@@ -398,7 +459,7 @@ export default function App() {
               setDestination={setDestination}
             />
 
-            {/* GLOBAL POSTGIS ZONES (Safe/Unsafe Circles) */}
+            {/* GLOBAL POSTGIS ZONES */}
             {zones.map((zone) => (
               <Circle
                 key={zone.id}
@@ -407,7 +468,7 @@ export default function App() {
                 pathOptions={{
                   color: zone.type === 'safe' ? '#10b981' : '#ef4444',
                   fillColor: zone.type === 'safe' ? '#10b981' : '#ef4444',
-                  fillOpacity: 0.12,
+                  fillOpacity: 0.14,
                   weight: 1,
                   dashArray: '2, 4',
                 }}
@@ -420,7 +481,7 @@ export default function App() {
               </Circle>
             ))}
 
-            {/* DYNAMIC RED & GREEN CORRIDOR ZONES (Faceted Polygons) */}
+            {/* DYNAMIC RED & GREEN CORRIDOR ZONES */}
             {corridorZones.map((zone) => (
               <React.Fragment key={zone.id}>
                 <Polygon
@@ -428,7 +489,7 @@ export default function App() {
                   pathOptions={{
                     color: zone.type === 'safe' ? '#34d399' : '#f87171',
                     fillColor: zone.type === 'safe' ? '#10b981' : '#ef4444',
-                    fillOpacity: zone.type === 'safe' ? 0.18 : 0.22,
+                    fillOpacity: zone.type === 'safe' ? 0.18 : 0.24,
                     weight: 1.5,
                   }}
                 >
@@ -449,30 +510,50 @@ export default function App() {
               </React.Fragment>
             ))}
 
-            {/* LIVE ROAD POLYLINE (Calculated from OSRM) */}
+            {/* NEON GLOW ROAD POLYLINE (Outer Halo + Inner Core) */}
             {routePath.length > 0 && (
-              <Polyline
-                positions={routePath}
-                color={
-                  selectedRouteKey === 'safest' ? '#10b981' : 
-                  selectedRouteKey === 'moderate' ? '#3b82f6' : 
-                  '#f43f5e'
-                }
-                weight={6}
-                opacity={0.9}
-              />
+              <React.Fragment key={selectedRouteKey}>
+                {/* Outer Glow Halo */}
+                <Polyline
+                  positions={routePath}
+                  pathOptions={{
+                    color:
+                      selectedRouteKey === 'safest' ? '#10b981' :
+                      selectedRouteKey === 'moderate' ? '#3b82f6' :
+                      '#f43f5e',
+                    weight: 14,
+                    opacity: 0.25,
+                    lineCap: 'round',
+                    lineJoin: 'round',
+                  }}
+                />
+                {/* Crisp Inner Core */}
+                <Polyline
+                  positions={routePath}
+                  pathOptions={{
+                    color:
+                      selectedRouteKey === 'safest' ? '#34d399' :
+                      selectedRouteKey === 'moderate' ? '#60a5fa' :
+                      '#fb7185',
+                    weight: 5,
+                    opacity: 1,
+                    lineCap: 'round',
+                    lineJoin: 'round',
+                  }}
+                />
+              </React.Fragment>
             )}
 
-            {/* LIVE USER GPS MARKER */}
-            <Marker position={userCoords}>
+            {/* LIVE USER GPS RADAR MARKER */}
+            <Marker position={userCoords} icon={userPulseIcon}>
               <Popup>
-                <span className="text-xs font-bold text-blue-600">You are here</span>
+                <span className="text-xs font-bold text-emerald-600">You are here</span>
               </Popup>
             </Marker>
 
             {/* DESTINATION MARKER */}
             {destCoords && (
-              <Marker position={destCoords}>
+              <Marker position={destCoords} icon={destPinIcon}>
                 <Popup>
                   <span className="text-xs font-bold text-rose-600">{destination}</span>
                 </Popup>
@@ -565,10 +646,10 @@ export default function App() {
 
         {/* STATE 2: ROUTES SELECTION PANEL */}
         {navState === 'routes' && availableRoutes && (
-          <div className="relative z-[1000] p-4 bg-[#0c121e]/98 border-t border-white/10 space-y-3">
+          <div className="relative z-[1000] p-4 bg-[#0c121e]/98 border-t border-white/10 space-y-3 shrink-0">
             
             {/* Multi-Route Tabs */}
-            <div className="flex bg-[#131b2e] p-1 rounded-xl border border-white/5 mb-2">
+            <div className="flex bg-[#131b2e] p-1 rounded-xl border border-white/5">
               {['fastest', 'safest', 'moderate'].map((key) => {
                 const isActive = selectedRouteKey === key;
                 return (
@@ -589,7 +670,7 @@ export default function App() {
                         summary: route.summary
                       });
                     }}
-                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all capitalize ${
+                    className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-colors capitalize ${
                       isActive 
                         ? (key === 'safest' ? 'bg-emerald-500 text-gray-950 shadow-md' : key === 'moderate' ? 'bg-blue-500 text-white shadow-md' : 'bg-rose-500 text-white shadow-md') 
                         : 'text-gray-400 hover:text-white'
@@ -600,67 +681,68 @@ export default function App() {
                 );
               })}
             </div>
-            {/* Safest Route Card with Dynamic Severity Colors */}
-            <div className={`p-4 rounded-2xl border transition shadow-xl space-y-3 ${
-              aiData.safety_score >= 75 
+
+            {/* Route Card with Locked Height (No Layout Shift) */}
+            <div className={`p-3.5 rounded-2xl border transition-colors duration-200 shadow-xl space-y-2.5 ${
+              aiData.safety_score >= 80 
                 ? 'bg-emerald-500/10 border-emerald-500/50' 
-                : aiData.safety_score >= 60 
-                  ? 'bg-amber-500/10 border-amber-500/50' 
-                  : 'bg-rose-500/10 border-rose-500/50'
+                : aiData.safety_score >= 65 
+                  ? 'bg-blue-500/10 border-blue-500/40' 
+                  : 'bg-amber-500/10 border-amber-500/50'
             }`}>
-              <div className="flex justify-between items-start">
-                <div className="flex items-center space-x-2.5">
-                  <div className={`p-2 rounded-xl ${
-                    aiData.safety_score >= 75 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+              <div className="flex justify-between items-center gap-2">
+                <div className="flex items-center space-x-2.5 min-w-0">
+                  <div className={`p-2 rounded-xl shrink-0 ${
+                    aiData.safety_score >= 80 ? 'bg-emerald-500/20 text-emerald-400' : aiData.safety_score >= 65 ? 'bg-blue-500/20 text-blue-400' : 'bg-amber-500/20 text-amber-400'
                   }`}>
                     {aiData.safety_score >= 75 ? <Shield className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
                   </div>
-                  <div>
-                  <h3 className="text-xs font-bold text-white tracking-wide capitalize">
-                    {selectedRouteKey === 'safest'
-                      ? 'Safest Path (Main Roads)'
-                      : selectedRouteKey === 'moderate'
-                      ? 'Moderate Path (Balanced)'
-                      : 'Fastest Shortcut'}
-                  </h3>
-                  <p className="text-[11px] text-gray-400 font-medium">{routeStats.distance} • ~{routeStats.duration}</p>
-                </div>
+                  <div className="min-w-0">
+                    <h3 className="text-xs font-bold text-white tracking-wide truncate">
+                      {selectedRouteKey === 'safest'
+                        ? 'Safest Path (Main Roads)'
+                        : selectedRouteKey === 'moderate'
+                        ? 'Moderate Path (Balanced)'
+                        : 'Fastest Shortcut'}
+                    </h3>
+                    <p className="text-[11px] text-gray-400 font-medium truncate">{routeStats.distance} • ~{routeStats.duration}</p>
+                  </div>
                 </div>
 
-                <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold border ${
-                  aiData.safety_score >= 75 
+                <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold border whitespace-nowrap shrink-0 ${
+                  aiData.safety_score >= 80 
                     ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' 
-                    : aiData.safety_score >= 60 
-                      ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' 
-                      : 'bg-rose-500/20 text-rose-400 border-rose-500/30 animate-pulse'
+                    : aiData.safety_score >= 65 
+                      ? 'bg-blue-500/20 text-blue-400 border-blue-500/30' 
+                      : 'bg-amber-500/20 text-amber-400 border-amber-500/30'
                 }`}>
                   Safety Score: {aiData.safety_score}/100
                 </span>
               </div>
 
-              {/* Labeled Assessment Badges */}
+              {/* Single-Line Truncated Assessment Badges */}
               <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/10 text-xs">
-                <div className="flex items-center space-x-2 bg-white/5 p-2 rounded-xl">
-                  <Lightbulb className={`w-3.5 h-3.5 ${aiData.safety_score < 70 ? 'text-amber-400' : 'text-emerald-400'}`} />
-                  <div>
+                <div className="flex items-center space-x-2 bg-white/5 p-2 rounded-xl min-w-0">
+                  <Lightbulb className={`w-3.5 h-3.5 shrink-0 ${aiData.safety_score < 70 ? 'text-amber-400' : 'text-emerald-400'}`} />
+                  <div className="min-w-0">
                     <p className="text-[9px] uppercase tracking-wider text-gray-400 font-semibold">Lighting</p>
-                    <p className="text-white text-[11px] font-bold">{aiData.lighting_rating}</p>
+                    <p className="text-white text-[11px] font-bold truncate">{aiData.lighting_rating}</p>
                   </div>
                 </div>
             
-                <div className="flex items-center space-x-2 bg-white/5 p-2 rounded-xl">
-                  <Radio className={`w-3.5 h-3.5 ${aiData.safety_score < 70 ? 'text-rose-400' : 'text-emerald-400'}`} />
-                  <div>
+                <div className="flex items-center space-x-2 bg-white/5 p-2 rounded-xl min-w-0">
+                  <Radio className={`w-3.5 h-3.5 shrink-0 ${aiData.safety_score < 70 ? 'text-rose-400' : 'text-emerald-400'}`} />
+                  <div className="min-w-0">
                     <p className="text-[9px] uppercase tracking-wider text-gray-400 font-semibold">Crowd</p>
-                    <p className="text-white text-[11px] font-bold">{aiData.crowd_level}</p>
+                    <p className="text-white text-[11px] font-bold truncate">{aiData.crowd_level}</p>
                   </div>
                 </div>
               </div>
 
-              {/* Dedicated Summary Box */}
-              <div className="bg-[#0b101b] border border-white/5 rounded-xl p-2.5 flex items-start space-x-2">
+              {/* Fixed-Height Summary Box */}
+              <div className="bg-[#0b101b] border border-white/5 rounded-xl p-2.5 h-[48px] flex items-start space-x-2 overflow-hidden">
                 <Info className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" />
-                <p className="text-[10px] text-gray-300 leading-relaxed font-medium">
+                <p className="text-[10px] text-gray-300 leading-snug font-medium line-clamp-2">
                   {aiData.summary}
                 </p>
               </div>
@@ -668,7 +750,7 @@ export default function App() {
 
             <button
               onClick={() => setNavState('navigating')}
-              className={`w-full py-3 rounded-2xl font-bold text-xs active:scale-98 shadow-lg transition flex items-center justify-center space-x-1.5 ${
+              className={`w-full py-3 rounded-2xl font-bold text-xs active:scale-98 shadow-lg transition-colors flex items-center justify-center space-x-1.5 ${
                 aiData.safety_score >= 70
                   ? 'bg-emerald-500 text-gray-950 hover:bg-emerald-400 shadow-emerald-500/20'
                   : 'bg-amber-500 text-gray-950 hover:bg-amber-400 shadow-amber-500/20'

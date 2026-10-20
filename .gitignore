@@ -1,4 +1,4 @@
-# Sensitive configs & secrets (NEVER commit these)
+
 .env
 .env.*
 *.pem
