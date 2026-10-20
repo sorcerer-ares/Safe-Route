@@ -1,0 +1,91 @@
+name: SafeRoute CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  DOCKER_IMAGE: vlawliet/saferoute-app
+  AWS_REGION: ap-south-1
+  EB_APP_NAME: Safe-Route
+  EB_ENV_NAME: Safe-Route-env-2
+
+jobs:
+  # STAGE 1: Continuous Integration (Verify Backend & Frontend Compile Cleanly)
+  ci-verify:
+    name: 1. Lint & Build Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Backend dependencies & check syntax
+        working-directory: ./Backend
+        run: |
+          pip install -r requirements.txt
+          python -m py_compile app/main.py app/database.py app/models.py app/ai_service.py
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify Frontend production build
+        working-directory: ./Frontend
+        run: |
+          npm install
+          npm run build
+
+  # STAGE 2: Continuous Deployment (Build Image -> Push to Hub -> Deploy to Beanstalk)
+  build-and-deploy:
+    name: 2. Docker Push & Beanstalk Deploy
+    needs: ci-verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image (SHA + latest)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:latest
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+
+      - name: Inject immutable image SHA into Beanstalk compose file
+        run: |
+          sed -i "s|${{ env.DOCKER_IMAGE }}:latest|${{ env.DOCKER_IMAGE }}:${{ github.sha }}|g" beanstalk/docker-compose.yml
+          cat beanstalk/docker-compose.yml
+          zip -j deploy.zip beanstalk/docker-compose.yml
+
+      - name: Deploy bundle to AWS Elastic Beanstalk
+        uses: einaregilsson/beanstalk-deploy@v22
+        with:
+          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          application_name: ${{ env.EB_APP_NAME }}
+          environment_name: ${{ env.EB_ENV_NAME }}
+          region: ${{ env.AWS_REGION }}
+          version_label: "git-${{ github.sha }}"
+          deployment_package: deploy.zip
+          wait_for_deployment: true
