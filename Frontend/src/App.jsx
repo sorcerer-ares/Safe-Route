@@ -442,28 +442,6 @@ const showToast = (title, message, type = 'emerald') => {
                 </div>
               </div>
             </div>
-
-            {/* Quick Pick Presets */}
-            <div className="flex items-center space-x-2 overflow-x-auto pb-1 scrollbar-none">
-              <button
-                onClick={() => selectPresetDestination('Connaught Place', [28.6315, 77.2167])}
-                className="px-3 py-1.5 rounded-full bg-[#131b2e] border border-white/10 text-[11px] text-gray-300 hover:border-emerald-500 whitespace-nowrap"
-              >
-                📍 Connaught Place
-              </button>
-              <button
-                onClick={() => selectPresetDestination('Mandi House', [28.6250, 77.2340])}
-                className="px-3 py-1.5 rounded-full bg-[#131b2e] border border-white/10 text-[11px] text-gray-300 hover:border-emerald-500 whitespace-nowrap"
-              >
-                🚇 Mandi House
-              </button>
-              <button
-                onClick={() => selectPresetDestination('Janpath Market', [28.6250, 77.2185])}
-                className="px-3 py-1.5 rounded-full bg-[#131b2e] border border-white/10 text-[11px] text-gray-300 hover:border-emerald-500 whitespace-nowrap"
-              >
-                🛍️ Janpath
-              </button>
-            </div>
           </div>
         )}
 
