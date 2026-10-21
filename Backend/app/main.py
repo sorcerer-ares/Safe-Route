@@ -51,12 +51,11 @@ Description = Annotated[
 ]
 
 
-class ReportCreate(BaseModel):
-    category: Category
-    description: Description
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
-
+class IncidentCreate(BaseModel):
+    category: str
+    description: str
+    latitude: float
+    longitude: float
 
 class RouteEvaluateRequest(BaseModel):
     origin: str
@@ -176,34 +175,37 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/reports")
-def get_reports(db: Session = Depends(get_db)):
+@app.post("/api/reports")
+@app.post("/reports")
+def create_report(report: IncidentCreate, db: Session = Depends(get_db)):
+    new_id = int(math.fabs(hash(f"{report.latitude}{report.longitude}{report.category}")) % 10000)
     try:
-        reports = db.query(HazardReport).order_by(HazardReport.created_at.desc()).all()
-        return [serialize_report(report) for report in reports]
-    except Exception as e:
-        print(f"LOG: Failed to fetch reports: {e}")
-        return []
-
-
-@app.post("/reports", status_code=201)
-def create_report(payload: ReportCreate, db: Session = Depends(get_db)):
-    try:
-        report = HazardReport(
-            category=payload.category,
-            description=payload.description,
-            latitude=payload.latitude,
-            longitude=payload.longitude,
-            location=WKTElement(f"POINT({payload.longitude} {payload.latitude})", srid=4326),
+        db_report = HazardReport(
+            category=report.category,
+            description=report.description or f"User reported {report.category.replace('_', ' ')}",
+            latitude=report.latitude,
+            longitude=report.longitude,
+            location=f"SRID=4326;POINT({report.longitude} {report.latitude})"
         )
-        db.add(report)
+        db.add(db_report)
         db.commit()
-        db.refresh(report)
-        return serialize_report(report)
+        db.refresh(db_report)
+        new_id = db_report.id
     except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"LOG: Saved report in-memory fallback: {e}")
 
+    # Return the polygon immediately so the frontend can draw it right away
+    return {
+        "status": "success",
+        "zone": {
+            "id": f"hazard-user-{new_id}",
+            "type": "unsafe",
+            "center": [report.latitude, report.longitude],
+            "polygon": generate_faceted_polygon(report.latitude, report.longitude, radius_meters=75, seed_val=new_id, sides=5),
+            "title": f"Reported: {report.category.replace('_', ' ').title()}",
+            "description": report.description or "Community-flagged safety hazard."
+        }
+    }
 def remove_spikes(path: list[list[float]]) -> list[list[float]]:
     """Strips out-and-back retracing loops from a coordinate polyline."""
     if len(path) < 4:

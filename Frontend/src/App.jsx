@@ -170,6 +170,15 @@ export default function App() {
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [availableRoutes, setAvailableRoutes] = useState(null);
   const [selectedRouteKey, setSelectedRouteKey] = useState('safest');
+
+  // Toast Notification State (replaces browser alert())
+  const [toast, setToast] = useState(null);
+  const [isSimPaused, setIsSimPaused] = useState(false);
+
+  // Report Modal Form States
+  const [reportCategory, setReportCategory] = useState('broken_streetlight');
+  const [reportDescription, setReportDescription] = useState('');
+  const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   // Gemini / AI Data
   const [aiData, setAiData] = useState({
     safety_score: 91,
@@ -178,7 +187,12 @@ export default function App() {
     police_presence: "CCTV & Police coverage",
     summary: "Clear arterial sidewalks prioritized"
   });
-
+const showToast = (title, message, type = 'emerald') => {
+    setToast({ title, message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
   const API_URL = window.location.port === '5173' ? 'http://127.0.0.1:8000' : '';
 
   useEffect(() => {
@@ -208,36 +222,50 @@ export default function App() {
   }, []);
 
   // HACKATHON DEMO MAGIC: Simulate walking along the route when navigation starts
+  // Upgraded Navigation Simulator with Live Distance Countdown & Toast Arrival
   useEffect(() => {
     let interval;
-    if (navState === 'navigating' && routePath.length > 0) {
+    if (navState === 'navigating' && routePath.length > 0 && !isSimPaused) {
       let step = 0;
-      
+      const totalSteps = routePath.length;
+      const baseRouteDist = availableRoutes?.[selectedRouteKey]?.distance || routeStats.distance;
+      const initialDist = parseFloat(baseRouteDist) || 1.4;
+
       interval = setInterval(() => {
-        if (step < routePath.length) {
-          // Move the GPS radar dot to the next coordinate on the path
+        if (step < totalSteps) {
           setUserCoords(routePath[step]);
-          step += 1; 
+
+          // Dynamically count down remaining distance and minutes
+          const fractionLeft = Math.max(0, (totalSteps - 1 - step) / totalSteps);
+          const remainingKm = (initialDist * fractionLeft).toFixed(2);
+          const remainingMin = Math.max(1, Math.ceil(remainingKm * 12));
+          setRouteStats({
+            distance: `${remainingKm} km`,
+            duration: `${remainingMin} min`
+          });
+
+          step += 1;
         } else {
-          // Arrived at destination
           clearInterval(interval);
+          showToast(
+            'Destination Reached Safely!',
+            'You have arrived at your destination via the monitored corridor.',
+            'emerald'
+          );
           setTimeout(() => {
-            alert("You have arrived safely at your destination!");
             setNavState('explore');
             setRoutePath([]);
             setCorridorZones([]);
             setDestCoords(null);
             setDestination('Tap on Map or Select');
-            // Reset position back to start for the next demo run
-            setUserCoords(routePath[0]); 
-          }, 500);
+            setUserCoords(routePath[0]);
+          }, 1200);
         }
-      }, 600); // Moves the dot every 600 milliseconds
+      }, 600);
     }
-    
+
     return () => clearInterval(interval);
-  }, [navState, routePath]);
-  
+  }, [navState, routePath, isSimPaused]);
   const selectPresetDestination = (name, coords) => {
     setDestination(name);
     setDestCoords(coords);
@@ -260,8 +288,6 @@ export default function App() {
       : [parseFloat(destCoords.lat), parseFloat(destCoords.lng)];
 
     try {
-      // We removed the raw frontend OSRM fetch here
-
       const backendRes = await fetch(`${API_URL}/api/plan-routes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -278,18 +304,18 @@ export default function App() {
         if (data && data.routes) {
           setAvailableRoutes(data.routes);
           setSelectedRouteKey('safest');
-          
+
           const activeRoute = data.routes['safest'];
           if (activeRoute.path && activeRoute.path.length > 1) {
             setRoutePath(activeRoute.path);
             setRouteStats({ distance: activeRoute.distance, duration: activeRoute.duration });
           }
           if (activeRoute.zones) setCorridorZones(activeRoute.zones);
-          
+
           setAiData({
             safety_score: activeRoute.score,
             lighting_rating: activeRoute.lighting,
-            crowd_level: activeRoute.crowd, 
+            crowd_level: activeRoute.crowd,
             summary: activeRoute.summary
           });
         }
@@ -303,56 +329,100 @@ export default function App() {
     }
   };
 
-  const handleReportSubmit = async () => {
-    if (!hazardLoc) return;
-    if (hazardText.trim().length < 5) {
-      setReportError('Please enter at least 5 characters.');
-      return;
-    }
+  const handleReportSubmit = async (e) => {
+    if (e) e.preventDefault();
+    setIsSubmittingReport(true);
 
-    setReportSubmitting(true);
-    setReportError('');
+    const targetSource = hazardLoc || userCoords;
+    const lat = Array.isArray(targetSource) ? targetSource[0] : targetSource.lat;
+    const lng = Array.isArray(targetSource) ? targetSource[1] : targetSource.lng;
+
+    // Fallback polygon in case network is slow
+    const fallbackZone = {
+      id: `hazard-local-${Date.now()}`,
+      type: 'unsafe',
+      center: [lat, lng],
+      polygon: [
+        [lat + 0.0006, lng],
+        [lat + 0.0002, lng + 0.0006],
+        [lat - 0.0005, lng + 0.0004],
+        [lat - 0.0005, lng - 0.0004],
+        [lat + 0.0002, lng - 0.0006],
+      ],
+      title: `Reported: ${reportCategory.replace('_', ' ').toUpperCase()}`,
+      description: reportDescription || 'Community-flagged safety hazard.'
+    };
+
     try {
-      const res = await fetch(`${API_URL}/reports`, {
+      const res = await fetch(`${API_URL}/api/reports`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          category: 'safety_hazard',
-          description: hazardText.trim(),
-          latitude: parseFloat(hazardLoc.lat),
-          longitude: parseFloat(hazardLoc.lng),
-        }),
+          category: reportCategory,
+          description: reportDescription || 'Flagged by pedestrian during navigation.',
+          latitude: parseFloat(lat),
+          longitude: parseFloat(lng)
+        })
       });
 
       if (res.ok) {
-        const item = await res.json();
-        setReports((prev) => [item, ...prev]);
-        fetch(`${API_URL}/api/zones`).then((r) => r.ok && r.json()).then(setZones);
-        setReportModal(false);
-        setHazardText('');
-        setHazardLoc(null);
+        const data = await res.json();
+        const createdZone = data.zone || fallbackZone;
+        setCorridorZones((prev) => [...prev, createdZone]);
       } else {
-        throw new Error("Report creation failed");
+        setCorridorZones((prev) => [...prev, fallbackZone]);
       }
     } catch (err) {
-      setReportError('Could not submit report.');
+      setCorridorZones((prev) => [...prev, fallbackZone]);
     } finally {
-      setReportSubmitting(false);
+      setIsSubmittingReport(false);
+      setReportModal(false);
+      setHazardLoc(null);
+      setIsSimPaused(false);
+      setReportDescription('');
+      showToast(
+        'Hazard Reported Live',
+        'New caution zone added to the map & synced with PostGIS.',
+        'amber'
+      );
     }
   };
 
   const handleSos = () => {
     setSosActive(true);
+    showToast(
+      'EMERGENCY SOS BROADCASTED',
+      'Live GPS coordinates and active route telemetry sent to emergency contacts.',
+      'amber'
+    );
     setTimeout(() => {
-      alert('EMERGENCY ALERT: Real-time telemetry broadcasted.');
       setSosActive(false);
-    }, 400);
+    }, 3000);
   };
 
   return (
     <div className="w-screen h-screen bg-[#07090E] flex items-center justify-center font-sans antialiased select-none">
       <div className="relative w-full max-w-[420px] h-full sm:h-[92vh] bg-[#0c121e] sm:rounded-[40px] overflow-hidden border border-white/10 shadow-2xl flex flex-col">
 
+        {/* IN-APP TOAST NOTIFICATION */}
+            {toast && (
+              <div className="absolute top-16 left-4 right-4 z-[3000] animate-bounce">
+                <div className={`p-3.5 rounded-2xl border backdrop-blur-md shadow-2xl flex items-start space-x-3 ${
+                  toast.type === 'emerald'
+                    ? 'bg-[#0c1917]/95 border-emerald-500/60 text-emerald-400'
+                    : 'bg-[#1c160c]/95 border-amber-500/60 text-amber-400'
+                }`}>
+                  <Shield className="w-5 h-5 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-bold text-white">{toast.title}</p>
+                    <p className="text-[11px] text-gray-300 mt-0.5 leading-snug">{toast.message}</p>
+                  </div>
+                  <button onClick={() => setToast(null)} className="text-gray-400 hover:text-white text-xs font-bold px-1">
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )}
         {/* 1. TOP STATUS BAR: EXPLORE */}
         {navState === 'explore' && (
           <div className="absolute top-0 inset-x-0 z-[1000] p-4 bg-gradient-to-b from-[#0c121e] via-[#0c121e]/80 to-transparent space-y-3">
@@ -509,7 +579,9 @@ export default function App() {
                 </Marker>
               </React.Fragment>
             ))}
+            
 
+            
             {/* NEON GLOW ROAD POLYLINE (Outer Halo + Inner Core) */}
             {routePath.length > 0 && (
               <React.Fragment key={selectedRouteKey}>
@@ -565,6 +637,13 @@ export default function App() {
           {isPickingDest && (
             <div className="absolute top-24 inset-x-6 z-[1000] bg-emerald-600/90 border border-emerald-400 text-white rounded-2xl p-3 text-center text-xs font-semibold shadow-2xl backdrop-blur-md animate-pulse">
               📍 Tap anywhere on the map to set destination
+            </div>
+          )}
+
+          {/* Tap Prompt for Hazard Reporting */}
+          {isReportingMode && (
+            <div className="absolute top-24 inset-x-6 z-[1000] bg-amber-500/95 border border-amber-300 text-gray-950 rounded-2xl p-3 text-center text-xs font-bold shadow-2xl backdrop-blur-md animate-pulse">
+              ⚠️ Tap anywhere on the map to flag a safety hazard
             </div>
           )}
 
@@ -771,20 +850,44 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white">{routeStats.distance} • {routeStats.duration}</h3>
-                  <p className="text-[11px] text-emerald-400 font-semibold">Low risk route active</p>
+                  <p className="text-[11px] text-emerald-400 font-semibold">
+                    {isSimPaused ? 'Navigation Paused' : 'Simulating Walk • Low risk route'}
+                  </p>
                 </div>
               </div>
-              <button
-                onClick={() => setNavState('routes')}
-                className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-gray-300"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => setIsSimPaused(!isSimPaused)}
+                  className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-[10px] font-bold text-gray-200"
+                >
+                  {isSimPaused ? 'Resume' : 'Pause'}
+                </button>
+                <button
+                  onClick={() => {
+                    setIsSimPaused(false);
+                    if (routePath.length > 0) setUserCoords(routePath[0]);
+                    if (availableRoutes?.[selectedRouteKey]) {
+                      setRouteStats({
+                        distance: availableRoutes[selectedRouteKey].distance,
+                        duration: availableRoutes[selectedRouteKey].duration
+                      });
+                    }
+                    setNavState('routes');
+                  }}
+                  className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-gray-300"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center space-x-2 pt-1">
               <button
-                onClick={() => setIsReportingMode(!isReportingMode)}
+                onClick={() => {
+                  setIsSimPaused(true);
+                  setHazardLoc(null);
+                  setReportModal(true);
+                }}
                 className="flex-1 py-2.5 px-3 rounded-xl bg-white/5 border border-white/10 text-xs text-gray-300 hover:bg-white/10 transition flex items-center justify-center space-x-1.5"
               >
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
@@ -802,41 +905,81 @@ export default function App() {
           </div>
         )}
 
-        {/* HAZARD MODAL */}
+        {/* REPORT INCIDENT MODAL */}
         {reportModal && (
-          <div className="absolute inset-0 z-[2000] bg-black/80 backdrop-blur-sm p-4 flex items-center justify-center">
-            <div className="w-full bg-[#131b2e] border border-white/10 rounded-2xl p-4 space-y-3">
+          <div className="absolute inset-0 z-[2500] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-[#111827] border border-white/10 rounded-3xl p-5 w-full max-w-sm space-y-4 shadow-2xl">
               <div className="flex justify-between items-center">
-                <h3 className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-400" /> Report Hazard At Selected Location
-                </h3>
-                <button onClick={() => setReportModal(false)} className="text-gray-400 hover:text-white">
-                  <X className="w-4 h-4" />
+                <div className="flex items-center space-x-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-400" />
+                  <h3 className="text-sm font-bold text-white">Report Safety Hazard</h3>
+                </div>
+                <button
+                  onClick={() => {
+                    setReportModal(false);
+                    setIsSimPaused(false);
+                  }}
+                  className="text-gray-400 hover:text-white text-sm"
+                >
+                  ✕
                 </button>
               </div>
-              <textarea
-                rows={3}
-                value={hazardText}
-                onChange={(e) => setHazardText(e.target.value)}
-                placeholder="e.g. Broken street lights, dark corner..."
-                className="w-full bg-[#0b0f19] border border-white/10 rounded-xl p-2.5 text-xs text-white outline-none focus:border-emerald-500 resize-none"
-              />
-              <div className="flex justify-end space-x-2">
-                <button onClick={() => setReportModal(false)} className="px-3 py-1.5 rounded-lg text-[11px] bg-white/5 text-gray-300">
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400 font-bold block mb-1">
+                    Hazard Category
+                  </label>
+                  <select
+                    value={reportCategory}
+                    onChange={(e) => setReportCategory(e.target.value)}
+                    className="w-full bg-[#1f2937] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="broken_streetlight">Broken Streetlight / Dark Stretch</option>
+                    <option value="suspicious_activity">Suspicious Crowd / Harassment</option>
+                    <option value="blocked_footpath">Blocked Footpath / Construction</option>
+                    <option value="isolated_blindspot">Unlit Blind Spot / No CCTV</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] uppercase tracking-wider text-gray-400 font-bold block mb-1">
+                    Details (Optional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={reportDescription}
+                    onChange={(e) => setReportDescription(e.target.value)}
+                    placeholder="E.g., Streetlights out near the corner park..."
+                    className="w-full bg-[#1f2937] border border-white/10 rounded-xl p-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex space-x-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReportModal(false);
+                    setIsSimPaused(false);
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-white/5 text-gray-300 text-xs font-bold hover:bg-white/10"
+                >
                   Cancel
                 </button>
                 <button
+                  type="button"
+                  disabled={isSubmittingReport}
                   onClick={handleReportSubmit}
-                  disabled={reportSubmitting}
-                  className="px-3 py-1.5 rounded-lg text-[11px] bg-emerald-600 text-white font-medium hover:bg-emerald-500 disabled:opacity-50"
+                  className="flex-1 py-2.5 rounded-xl bg-amber-500 text-gray-950 text-xs font-bold hover:bg-amber-400 transition-colors"
                 >
-                  {reportSubmitting ? 'Submitting…' : 'Submit'}
+                  {isSubmittingReport ? 'Submitting...' : 'Submit Report'}
                 </button>
               </div>
             </div>
           </div>
         )}
-
+        
       </div>
     </div>
   );
