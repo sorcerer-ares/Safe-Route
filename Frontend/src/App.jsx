@@ -148,7 +148,7 @@ export default function App() {
   // Dynamic GPS & Destination states
   const [userCoords, setUserCoords] = useState([28.5635, 77.2450]);
   const [destCoords, setDestCoords] = useState(null);
-  const [origin, setOrigin] = useState('(Demo Location)');
+  const [origin, setOrigin] = useState('(Demo User Location)');
   const [destination, setDestination] = useState('Tap on Map or Select');
   const [isPickingDest, setIsPickingDest] = useState(false);
 
